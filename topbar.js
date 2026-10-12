@@ -22,7 +22,7 @@
 .topbar {
   position: sticky; top: 0; z-index: 40;
   display: flex; gap: 6px;
-  padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
+  padding: max(10px, var(--safe-top, env(safe-area-inset-top))) max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
   /* Fully opaque so each page's body background can't bleed through
      and tint the bar a different color. Matches the dashboard's base
      dark background so the bar feels continuous with the page chrome. */
@@ -158,7 +158,7 @@ body.topbar-modal-open {
     max-height: 100vh !important;
     height: 100vh !important;
     border-radius: 0 !important;
-    padding-top: max(20px, env(safe-area-inset-top)) !important;
+    padding-top: max(20px, var(--safe-top, env(safe-area-inset-top))) !important;
     padding-bottom: max(28px, env(safe-area-inset-bottom)) !important;
     overflow-y: auto !important;
     overscroll-behavior: contain;
@@ -408,9 +408,48 @@ body.topbar-modal-open {
     sync();
   }
 
+  // -------- iOS safe-area fallback --------
+  // A Home Screen web app can draw under the status bar / Dynamic Island
+  // while env(safe-area-inset-top) still reports 0, which leaves the bar
+  // hidden behind the island. When that happens, set --safe-top to the
+  // known inset for the device so the CSS above has something to use.
+  function applySafeTopFallback() {
+    const root = document.documentElement;
+    const clear = () => root.style.removeProperty('--safe-top');
+    try {
+      const isIPhone = /iPhone|iPod/.test(navigator.userAgent || '');
+      const standalone = navigator.standalone === true ||
+        (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+      const portrait = window.innerHeight > window.innerWidth;
+      if (!isIPhone || !standalone || !portrait || !document.body) return clear();
+
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;' +
+        'padding-top:env(safe-area-inset-top);';
+      document.body.appendChild(probe);
+      const reported = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+      probe.remove();
+
+      // Page only sits under the status bar when it fills the whole screen.
+      const screenH = Math.max(screen.height, screen.width);
+      const fullBleed = window.innerHeight >= screenH - 1;
+      if (reported > 0 || !fullBleed) return clear();
+
+      let inset = 20;                                        // home-button iPhones
+      if ([874, 912, 956].indexOf(screenH) !== -1) inset = 62;      // 16 Pro / 17 family
+      else if ([852, 932].indexOf(screenH) !== -1) inset = 59;      // Dynamic Island
+      else if ([812, 844, 896, 926].indexOf(screenH) !== -1) inset = 50; // notch
+      else if (screenH > 812) inset = 62;                    // unknown newer model
+      root.style.setProperty('--safe-top', inset + 'px');
+    } catch (e) { clear(); }
+  }
+
   // -------- Boot --------
   function boot() {
     injectStyleAndHTML();
+    applySafeTopFallback();
+    window.addEventListener('resize', applySafeTopFallback);
+    window.addEventListener('orientationchange', applySafeTopFallback);
     const btn = document.getElementById('topbarWaterAdd');
     if (btn) btn.addEventListener('click', (e) => { e.preventDefault(); addWater(); });
     render();

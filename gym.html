@@ -543,7 +543,7 @@ img, video, canvas, svg { max-width: 100%; }
   display: none; position: fixed; inset: 0;
   background: rgba(0,0,0,0.65); backdrop-filter: blur(6px);
   z-index: 100; align-items: center; justify-content: center;
-  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  padding: max(24px, var(--safe-top, env(safe-area-inset-top))) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
 }
 .po-modal-bg.show { display: flex; }
 .po-modal {
@@ -1074,7 +1074,7 @@ img, video, canvas, svg { max-width: 100%; }
 .wt-overlay.is-open { transform: translateY(0); }
 .wt-overlay-inner {
   max-width: 720px; margin: 0 auto;
-  padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+  padding: max(24px, var(--safe-top, env(safe-area-inset-top))) max(20px, env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 .wt-overlay-h {
   display: flex; align-items: center; gap: 14px;
@@ -1178,7 +1178,7 @@ img, video, canvas, svg { max-width: 100%; }
   opacity: 0; pointer-events: none;
   transition: opacity 0.2s;
   display: flex; flex-direction: column;
-  padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  padding: max(24px, var(--safe-top, env(safe-area-inset-top))) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
 .wt-viewer.is-open { opacity: 1; pointer-events: auto; }
 .wt-viewer-stage {
