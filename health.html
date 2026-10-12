@@ -1160,10 +1160,323 @@ main {
     </div>
   </section>
   <script>
-  // WHOOP data loading isn't wired up yet, so say so instead of doing nothing.
-  document.getElementById('whoopConnectBtn').addEventListener('click', function () {
-    document.getElementById('whoopAuthStatus').textContent = 'WHOOP connection is not set up yet.';
-  });
+  // ============================================================
+  // WHOOP — login + data. Tokens stay in this browser's localStorage;
+  // the /api functions hold the client secret and talk to WHOOP.
+  // ============================================================
+  (function () {
+    const WHOOP_CLIENT_ID = '11e41849-8237-4b65-9a9a-653de4f22a77';
+    const WHOOP_REDIRECT_URI = 'https://row-jje9.vercel.app/api/whoop-callback';
+    const WHOOP_SCOPES = 'read:recovery read:cycles read:sleep read:workout read:profile read:body_measurement offline';
+    const WHOOP_AUTH_URL = 'https://api.prod.whoop.com/oauth/oauth2/auth';
+    const TOKEN_KEY = 'whoop_tokens';
+    const STATE_KEY = 'whoop_oauth_state';
+    const RING_LEN = 603.19;
+    const COLORS = { good: '#6BE3A4', warn: '#F2C063', bad: '#FF8A8A' };
+
+    const el = (id) => document.getElementById(id);
+    const setStatus = (msg) => { el('whoopAuthStatus').textContent = msg || ''; };
+
+    function getTokens() {
+      try { return JSON.parse(localStorage.getItem(TOKEN_KEY)); } catch (e) { return null; }
+    }
+    function saveTokens(t) {
+      const prev = getTokens() || {};
+      localStorage.setItem(TOKEN_KEY, JSON.stringify({
+        access_token: t.access_token,
+        refresh_token: t.refresh_token || prev.refresh_token || null,
+        expires_at: Date.now() + (t.expires_in || 3600) * 1000,
+      }));
+    }
+    function clearTokens() { try { localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
+
+    function showConnected(on) {
+      el('whoopConnected').style.display = on ? '' : 'none';
+      el('whoopDisconnected').style.display = on ? 'none' : '';
+    }
+
+    // ----- OAuth -----
+    function startLogin() {
+      const bytes = new Uint8Array(12);
+      crypto.getRandomValues(bytes);
+      const state = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem(STATE_KEY, state);
+      setStatus('Opening WHOOP…');
+      window.location.href = WHOOP_AUTH_URL +
+        '?response_type=code' +
+        '&client_id=' + encodeURIComponent(WHOOP_CLIENT_ID) +
+        '&redirect_uri=' + encodeURIComponent(WHOOP_REDIRECT_URI) +
+        '&scope=' + encodeURIComponent(WHOOP_SCOPES) +
+        '&state=' + state;
+    }
+
+    // Picks up the result the /api/whoop-callback redirect leaves in the URL hash.
+    function consumeAuthHash() {
+      const hash = window.location.hash || '';
+      const isAuth = hash.indexOf('#whoop_auth=') === 0;
+      const isErr = hash.indexOf('#whoop_error=') === 0;
+      if (!isAuth && !isErr) return;
+      history.replaceState(null, '', window.location.pathname + '#whoop');
+      const expected = localStorage.getItem(STATE_KEY);
+      localStorage.removeItem(STATE_KEY);
+      if (isErr) {
+        setStatus('WHOOP login failed: ' + decodeURIComponent(hash.slice('#whoop_error='.length)));
+        return;
+      }
+      try {
+        const b64 = hash.slice('#whoop_auth='.length).replace(/-/g, '+').replace(/_/g, '/');
+        const data = JSON.parse(atob(b64));
+        if (!expected || data.state !== expected) {
+          setStatus('WHOOP login could not be verified — please try again.');
+          return;
+        }
+        saveTokens(data);
+      } catch (e) {
+        setStatus('WHOOP login failed — please try again.');
+      }
+    }
+
+    async function refreshTokens() {
+      const t = getTokens();
+      if (!t || !t.refresh_token) return false;
+      try {
+        const r = await fetch('/api/whoop-refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: t.refresh_token }),
+        });
+        if (!r.ok) return r.status === 401 ? false : null;   // null = temporary failure
+        saveTokens(await r.json());
+        return true;
+      } catch (e) { return null; }
+    }
+
+    async function fetchData() {
+      let t = getTokens();
+      if (!t) return { error: 'signed_out' };
+      if (t.expires_at - 60000 < Date.now()) {
+        const ok = await refreshTokens();
+        if (ok === false) return { error: 'signed_out' };
+        t = getTokens();
+      }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let r;
+        try {
+          r = await fetch('/api/whoop-data', { headers: { Authorization: 'Bearer ' + t.access_token } });
+        } catch (e) { return { error: 'offline' }; }
+        if (r.status === 401 && attempt === 0) {
+          const ok = await refreshTokens();
+          if (ok === false) return { error: 'signed_out' };
+          if (ok === null) return { error: 'offline' };
+          t = getTokens();
+          continue;
+        }
+        if (!r.ok) return { error: r.status === 401 ? 'signed_out' : 'server' };
+        try { return { data: await r.json() }; } catch (e) { return { error: 'server' }; }
+      }
+      return { error: 'server' };
+    }
+
+    // ----- Rendering -----
+    function fmtDur(ms) {
+      if (!ms || ms < 0) return '—';
+      const mins = Math.round(ms / 60000);
+      return Math.floor(mins / 60) + 'h ' + String(mins % 60).padStart(2, '0') + 'm';
+    }
+    function setZone(id, zone) {
+      const z = el(id);
+      z.classList.remove('z-good', 'z-norm', 'z-warn', 'z-bad');
+      if (zone) z.classList.add('z-' + zone);
+    }
+    function avg(list) {
+      const nums = list.filter((n) => typeof n === 'number' && isFinite(n));
+      return nums.length >= 3 ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+    }
+    function recoveryZone(score) {
+      if (score >= 67) return 'good';
+      if (score >= 34) return 'warn';
+      return 'bad';
+    }
+
+    function render(data) {
+      const scored = (r) => r && r.score_state === 'SCORED' && r.score;
+      const recs = (data.recovery || []).filter(scored);
+      const rec = recs[0] || null;
+      const sleeps = (data.sleep || []).filter((s) => scored(s) && !s.nap);
+      const sleep = (rec && sleeps.find((s) => s.id === rec.sleep_id)) || sleeps[0] || null;
+      const cycle = data.cycle && data.cycle.score ? data.cycle : null;
+      const reasons = [];
+
+      // Recovery ring
+      const fill = el('whoopRecoveryRingFill');
+      if (rec) {
+        const score = Math.round(rec.score.recovery_score);
+        const zone = recoveryZone(score);
+        el('whoopRecoveryScore').textContent = score + '%';
+        el('whoopRecoveryLabel').textContent = zone === 'good' ? 'Primed' : zone === 'warn' ? 'Moderate' : 'Run down';
+        el('whoopRecoveryLabel').style.color = COLORS[zone];
+        fill.style.stroke = COLORS[zone];
+        fill.style.strokeDashoffset = String(RING_LEN * (1 - Math.max(0, Math.min(100, score)) / 100));
+        el('whoopCalibrating').style.display = rec.score.user_calibrating ? '' : 'none';
+      } else {
+        el('whoopRecoveryScore').textContent = '—';
+        el('whoopRecoveryLabel').textContent = 'No recovery yet today';
+        el('whoopRecoveryLabel').style.color = '';
+        fill.style.strokeDashoffset = String(RING_LEN);
+        el('whoopCalibrating').style.display = 'none';
+      }
+
+      // HRV + RHR against the average of the previous days
+      const prior = recs.slice(1);
+      const hrv = rec ? rec.score.hrv_rmssd_milli : null;
+      const rhr = rec ? rec.score.resting_heart_rate : null;
+      const hrvBase = avg(prior.map((r) => r.score.hrv_rmssd_milli));
+      const rhrBase = avg(prior.map((r) => r.score.resting_heart_rate));
+      el('whoopHrv').textContent = hrv != null ? String(Math.round(hrv)) : '—';
+      el('whoopRhr').textContent = rhr != null ? String(Math.round(rhr)) : '—';
+      let hrvZone = null, rhrZone = null;
+      if (hrv != null && hrvBase) {
+        const ratio = hrv / hrvBase;
+        hrvZone = ratio >= 1.1 ? 'good' : ratio >= 0.9 ? 'norm' : ratio >= 0.75 ? 'warn' : 'bad';
+        reasons.push('HRV ' + Math.round(hrv) + ' ms vs ' + Math.round(hrvBase) + ' ms recent average');
+      }
+      if (rhr != null && rhrBase) {
+        const diff = rhr - rhrBase;
+        rhrZone = diff <= -2 ? 'good' : diff <= 3 ? 'norm' : diff <= 7 ? 'warn' : 'bad';
+        reasons.push('Resting HR ' + Math.round(rhr) + ' bpm vs ' + Math.round(rhrBase) + ' bpm recent average');
+      }
+      setZone('whoopZoneHrv', hrvZone);
+      setZone('whoopZoneRhr', rhrZone);
+
+      // Sleep
+      if (sleep) {
+        const sc = sleep.score;
+        const st = sc.stage_summary || {};
+        const rem = st.total_rem_sleep_time_milli || 0;
+        const deep = st.total_slow_wave_sleep_time_milli || 0;
+        const light = st.total_light_sleep_time_milli || 0;
+        const awake = st.total_awake_time_milli || 0;
+        const total = rem + deep + light + awake;
+        const perf = sc.sleep_performance_percentage;
+        el('whoopSleepScore').textContent = perf != null ? Math.round(perf) + '%' : '—';
+        el('whoopSleepDuration').textContent = fmtDur(rem + deep + light);
+        setZone('whoopZoneSleep', perf == null ? null : perf >= 85 ? 'good' : perf >= 70 ? 'norm' : perf >= 50 ? 'warn' : 'bad');
+        if (perf != null) reasons.push('Sleep ' + Math.round(perf) + '% of need (' + fmtDur(rem + deep + light) + ' asleep)');
+        if (total > 0) {
+          const pct = (v) => (v / total * 100).toFixed(1) + '%';
+          el('whoopStageRem').style.width = pct(rem);
+          el('whoopStageDeep').style.width = pct(deep);
+          el('whoopStageLight').style.width = pct(light);
+          el('whoopStageAwake').style.width = pct(awake);
+          el('whoopStageRemTxt').textContent = fmtDur(rem);
+          el('whoopStageDeepTxt').textContent = fmtDur(deep);
+          el('whoopStageLightTxt').textContent = fmtDur(light);
+          el('whoopStageAwakeTxt').textContent = fmtDur(awake);
+          el('whoopStagesMeta').textContent = fmtDur(st.total_in_bed_time_milli || total) + ' in bed';
+          el('whoopStages').style.display = '';
+        } else {
+          el('whoopStages').style.display = 'none';
+        }
+      } else {
+        el('whoopSleepScore').textContent = '—';
+        el('whoopSleepDuration').textContent = '—';
+        setZone('whoopZoneSleep', null);
+        el('whoopStages').style.display = 'none';
+      }
+
+      // Strain
+      if (cycle) {
+        const strain = cycle.score.strain;
+        el('whoopStrain').textContent = strain != null ? strain.toFixed(1) : '—';
+        el('whoopStrainDay').textContent = cycle.end ? 'last cycle' : 'today';
+        setZone('whoopZoneStrain', strain == null ? null : strain >= 18 ? 'warn' : 'norm');
+      } else {
+        el('whoopStrain').textContent = '—';
+        setZone('whoopZoneStrain', null);
+      }
+
+      // Biomarkers
+      const skin = rec ? rec.score.skin_temp_celsius : null;
+      const spo2 = rec ? rec.score.spo2_percentage : null;
+      const resp = sleep ? sleep.score.respiratory_rate : null;
+      const skinBase = avg(prior.map((r) => r.score.skin_temp_celsius));
+      const respBase = avg(sleeps.filter((s) => s !== sleep).map((s) => s.score.respiratory_rate));
+      const devZone = (v, base, warnAt, badAt) => {
+        if (v == null || !base) return null;
+        const d = Math.abs(v - base);
+        return d <= warnAt ? 'norm' : d <= badAt ? 'warn' : 'bad';
+      };
+      el('whoopSkinTemp').textContent = skin != null ? skin.toFixed(1) + ' °C' : '—';
+      el('whoopSpo2').textContent = spo2 != null ? spo2.toFixed(1) + '%' : '—';
+      el('whoopResp').textContent = resp != null ? resp.toFixed(1) + ' rpm' : '—';
+      setZone('whoopZoneSkin', devZone(skin, skinBase, 0.5, 1.0));
+      setZone('whoopZoneSpo2', spo2 == null ? null : spo2 >= 95 ? 'good' : spo2 >= 92 ? 'warn' : 'bad');
+      setZone('whoopZoneResp', devZone(resp, respBase, 1, 2));
+      el('whoopBio').style.display = (skin != null || spo2 != null || resp != null) ? '' : 'none';
+
+      // Today's call
+      if (rec) {
+        const zone = recoveryZone(Math.round(rec.score.recovery_score));
+        const badge = el('whoopVerdictBadge');
+        badge.textContent = zone === 'good' ? 'Push' : zone === 'warn' ? 'Steady' : 'Rest';
+        badge.style.color = COLORS[zone];
+        badge.style.borderColor = COLORS[zone];
+        el('whoopVerdict').style.borderLeftColor = COLORS[zone];
+        el('whoopVerdictHeadline').textContent =
+          zone === 'good' ? 'Recovery is high — a good day for a hard session.' :
+          zone === 'warn' ? 'Recovery is moderate — train, but keep the intensity in check.' :
+                            'Recovery is low — keep today light and prioritise rest.';
+        el('whoopVerdictReasons').innerHTML = '';
+        reasons.forEach((text) => {
+          const row = document.createElement('div');
+          row.textContent = '· ' + text;
+          el('whoopVerdictReasons').appendChild(row);
+        });
+        el('whoopVerdictAvoid').style.display = zone === 'bad' ? '' : 'none';
+        el('whoopVerdictAvoidText').textContent = 'max-effort lifts and high-intensity intervals.';
+        el('whoopVerdict').style.display = '';
+      } else {
+        el('whoopVerdict').style.display = 'none';
+      }
+
+      const now = new Date();
+      el('whoopUpdated').textContent = 'updated ' +
+        String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    }
+
+    let loading = false;
+    async function load() {
+      if (loading) return;
+      if (!getTokens()) { showConnected(false); return; }
+      loading = true;
+      showConnected(true);
+      try {
+        const result = await fetchData();
+        if (result.data) {
+          render(result.data);
+        } else if (result.error === 'signed_out') {
+          clearTokens();
+          showConnected(false);
+          setStatus('WHOOP session expired — connect again.');
+        } else {
+          el('whoopUpdated').textContent = result.error === 'offline' ? 'offline' : 'WHOOP unavailable';
+        }
+      } finally { loading = false; }
+    }
+
+    el('whoopConnectBtn').addEventListener('click', startLogin);
+    el('whoopRefreshBtn').addEventListener('click', load);
+    el('whoopDisconnectBtn').addEventListener('click', () => {
+      clearTokens();
+      showConnected(false);
+      setStatus('');
+    });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+    setInterval(load, 10 * 60 * 1000);
+
+    consumeAuthHash();
+    load();
+  })();
   </script>
 
   <div class="section-title">Daily Stack</div>
