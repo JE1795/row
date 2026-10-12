@@ -338,7 +338,6 @@ body.topbar-modal-open { overflow: hidden; touch-action: none; }
   // known inset for the device so the CSS above has something to use.
   function applySafeTopFallback() {
     const root = document.documentElement;
-    const info = {};
     let inset = 0;
     try {
       const isIPhone = /iPhone|iPod/.test(navigator.userAgent || '');
@@ -364,40 +363,10 @@ body.topbar-modal-open { overflow: hidden; touch-action: none; }
         else if ([812, 844, 896, 926].indexOf(screenH) !== -1) inset = 50; // notch
         else if (screenH > 812) inset = 62;                                // unknown newer model
       }
-      Object.assign(info, {
-        iphone: isIPhone, standalone: standalone, portrait: portrait, env: reported,
-        innerH: window.innerHeight, screenH: screenH,
-        vvTop: window.visualViewport ? Math.round(window.visualViewport.offsetTop) : 'n/a',
-      });
-    } catch (e) { inset = 0; info.error = String(e); }
+    } catch (e) { inset = 0; }
 
     if (inset > 0) root.style.setProperty('--safe-top', inset + 'px');
     else root.style.removeProperty('--safe-top');
-    info.applied = inset;
-    renderSafeAreaDebug(info);
-  }
-
-  // TEMPORARY: prints the safe-area readings under the top bar on iPhones
-  // so the Dynamic Island overlap can be diagnosed. Remove once fixed.
-  function renderSafeAreaDebug(info) {
-    try {
-      if (!info.iphone && !info.error) return;
-      const bar = document.getElementById('topbar');
-      if (!bar) return;
-      let el = document.getElementById('topbarSafeDebug');
-      if (!el) {
-        el = document.createElement('div');
-        el.id = 'topbarSafeDebug';
-        el.style.cssText = 'font:10px/1.4 ui-monospace,Menlo,monospace;color:#fbbf24;' +
-          'background:#0a0a0b;padding:4px 14px;word-break:break-all;';
-        bar.insertAdjacentElement('afterend', el);
-      }
-      const r = bar.getBoundingClientRect();
-      info.barTop = Math.round(r.top);
-      info.barPad = getComputedStyle(bar).paddingTop;
-      info.scrollY = Math.round(window.scrollY);
-      el.textContent = 'DEBUG v3 ' + Object.keys(info).map(k => k + '=' + info[k]).join(' ');
-    } catch (e) {}
   }
 
   function boot() {
