@@ -415,33 +415,66 @@ body.topbar-modal-open {
   // known inset for the device so the CSS above has something to use.
   function applySafeTopFallback() {
     const root = document.documentElement;
-    const clear = () => root.style.removeProperty('--safe-top');
+    const info = {};
+    let inset = 0;
     try {
       const isIPhone = /iPhone|iPod/.test(navigator.userAgent || '');
       const standalone = navigator.standalone === true ||
         (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
       const portrait = window.innerHeight > window.innerWidth;
-      if (!isIPhone || !standalone || !portrait || !document.body) return clear();
-
-      const probe = document.createElement('div');
-      probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;' +
-        'padding-top:env(safe-area-inset-top);';
-      document.body.appendChild(probe);
-      const reported = parseFloat(getComputedStyle(probe).paddingTop) || 0;
-      probe.remove();
-
-      // Page only sits under the status bar when it fills the whole screen.
       const screenH = Math.max(screen.height, screen.width);
-      const fullBleed = window.innerHeight >= screenH - 1;
-      if (reported > 0 || !fullBleed) return clear();
 
-      let inset = 20;                                        // home-button iPhones
-      if ([874, 912, 956].indexOf(screenH) !== -1) inset = 62;      // 16 Pro / 17 family
-      else if ([852, 932].indexOf(screenH) !== -1) inset = 59;      // Dynamic Island
-      else if ([812, 844, 896, 926].indexOf(screenH) !== -1) inset = 50; // notch
-      else if (screenH > 812) inset = 62;                    // unknown newer model
-      root.style.setProperty('--safe-top', inset + 'px');
-    } catch (e) { clear(); }
+      let reported = 0;
+      if (document.body) {
+        const probe = document.createElement('div');
+        probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;' +
+          'padding-top:env(safe-area-inset-top);';
+        document.body.appendChild(probe);
+        reported = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+        probe.remove();
+      }
+
+      if (isIPhone && standalone && portrait && reported === 0) {
+        inset = 20;                                                        // home-button iPhones
+        if ([874, 912, 956].indexOf(screenH) !== -1) inset = 62;           // 16 Pro / 17 family
+        else if ([852, 932].indexOf(screenH) !== -1) inset = 59;           // Dynamic Island
+        else if ([812, 844, 896, 926].indexOf(screenH) !== -1) inset = 50; // notch
+        else if (screenH > 812) inset = 62;                                // unknown newer model
+      }
+      Object.assign(info, {
+        iphone: isIPhone, standalone: standalone, portrait: portrait, env: reported,
+        innerH: window.innerHeight, screenH: screenH,
+        vvTop: window.visualViewport ? Math.round(window.visualViewport.offsetTop) : 'n/a',
+      });
+    } catch (e) { inset = 0; info.error = String(e); }
+
+    if (inset > 0) root.style.setProperty('--safe-top', inset + 'px');
+    else root.style.removeProperty('--safe-top');
+    info.applied = inset;
+    renderSafeAreaDebug(info);
+  }
+
+  // TEMPORARY: prints the safe-area readings under the top bar on iPhones
+  // so the Dynamic Island overlap can be diagnosed. Remove once fixed.
+  function renderSafeAreaDebug(info) {
+    try {
+      if (!info.iphone && !info.error) return;
+      const bar = document.getElementById('topbar');
+      if (!bar) return;
+      let el = document.getElementById('topbarSafeDebug');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'topbarSafeDebug';
+        el.style.cssText = 'font:10px/1.4 ui-monospace,Menlo,monospace;color:#fbbf24;' +
+          'background:#0a0a0b;padding:4px 14px;word-break:break-all;';
+        bar.insertAdjacentElement('afterend', el);
+      }
+      const r = bar.getBoundingClientRect();
+      info.barTop = Math.round(r.top);
+      info.barPad = getComputedStyle(bar).paddingTop;
+      info.scrollY = Math.round(window.scrollY);
+      el.textContent = 'DEBUG v3 ' + Object.keys(info).map(k => k + '=' + info[k]).join(' ');
+    } catch (e) {}
   }
 
   // -------- Boot --------
