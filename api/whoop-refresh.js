@@ -8,8 +8,8 @@ export default async function handler(req, res) {
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
   const refresh = body && body.refresh_token;
   if (!refresh) return res.status(400).json({ error: 'refresh_token required' });
-  const clientId = process.env.WHOOP_CLIENT_ID;
-  const clientSecret = process.env.WHOOP_CLIENT_SECRET;
+  const clientId = (process.env.WHOOP_CLIENT_ID || '').trim();
+  const clientSecret = (process.env.WHOOP_CLIENT_SECRET || '').trim();
   if (!clientId || !clientSecret) return res.status(500).json({ error: 'server not configured' });
   try {
     const form = new URLSearchParams({
